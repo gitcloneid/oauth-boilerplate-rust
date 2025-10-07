@@ -6,3 +6,4 @@ config/local.toml
 *.log
 .DS_Store
 .idea
+/src/docs
