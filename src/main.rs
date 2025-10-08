@@ -8,14 +8,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+                .unwrap_or_else(|_| "auth_session=debug,info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
     let config = AppConfig::new()?;
     
-    tracing::info!("Starting auth_session server...");
+    tracing::debug!("Starting auth_session server...");
     
     server::run(config).await?;
 

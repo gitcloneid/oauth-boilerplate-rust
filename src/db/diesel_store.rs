@@ -25,16 +25,20 @@ impl DieselStore {
         oauth_provider: Option<String>,
         oauth_id: Option<String>,
     ) -> Result<User, AppError> {
+        let pool_start = std::time::Instant::now();
         let mut conn = self.pool.get().await
             .map_err(|e| AppError::Pool(e.to_string()))?;
+        tracing::debug!("DB: pool.get() took {}ms", pool_start.elapsed().as_millis());
 
         // Check if user already exists
+        let check_start = std::time::Instant::now();
         let existing = users::table
             .filter(users::email.eq(&email))
             .first::<User>(&mut conn)
             .await
             .optional()
             .map_err(|e| AppError::Database(e))?;
+        tracing::debug!("DB: check email exists took {}ms", check_start.elapsed().as_millis());
 
         if existing.is_some() {
             return Err(AppError::BadRequest("Email already exists".to_string()));
@@ -52,25 +56,31 @@ impl DieselStore {
             updated_at: now,
         };
 
+        let insert_start = std::time::Instant::now();
         let user = diesel::insert_into(users::table)
             .values(&new_user)
             .get_result::<User>(&mut conn)
             .await
             .map_err(|e| AppError::Database(e))?;
+        tracing::debug!("DB: insert user took {}ms", insert_start.elapsed().as_millis());
 
         Ok(user)
     }
 
     pub async fn find_user_by_email(&self, email: &str) -> Result<Option<User>, AppError> {
+        let pool_start = std::time::Instant::now();
         let mut conn = self.pool.get().await
             .map_err(|e| AppError::Pool(e.to_string()))?;
+        tracing::debug!("DB: pool.get() for find_user took {}ms", pool_start.elapsed().as_millis());
 
+        let query_start = std::time::Instant::now();
         let user = users::table
             .filter(users::email.eq(email))
             .first::<User>(&mut conn)
             .await
             .optional()
             .map_err(|e| AppError::Database(e))?;
+        tracing::debug!("DB: find user query took {}ms", query_start.elapsed().as_millis());
 
         Ok(user)
     }

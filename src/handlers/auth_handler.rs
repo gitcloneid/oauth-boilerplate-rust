@@ -62,8 +62,11 @@ pub async fn register(
     State(state): State<AppState>,
     Json(payload): Json<RegisterRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
+    let start = std::time::Instant::now();
     let password_hash = hashing::hash_password(&payload.password)?;
+    tracing::debug!("Register: hashing took {}ms", start.elapsed().as_millis());
 
+    let db_start = std::time::Instant::now();
     let user = state.store.create_user(
         payload.email.clone(),
         payload.name.clone(),
@@ -71,6 +74,7 @@ pub async fn register(
         None,
         None,
     ).await?;
+    tracing::debug!("Register: DB create_user took {}ms", db_start.elapsed().as_millis());
 
     let token = jwt::generate_token(
         user.id,
@@ -94,11 +98,13 @@ pub async fn login(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
+    let db_start = std::time::Instant::now();
     let user = state
         .store
         .find_user_by_email(&payload.email)
         .await?
         .ok_or(AppError::Unauthorized)?;
+    tracing::debug!("Login: DB find_user took {}ms", db_start.elapsed().as_millis());
 
     if let Some(password_hash) = &user.password_hash {
         if !hashing::verify_password(&payload.password, password_hash)? {
@@ -135,13 +141,13 @@ pub async fn google_oauth(
         ClientId::new(state.config.google_oauth.client_id.clone()),
         Some(ClientSecret::new(state.config.google_oauth.client_secret.clone())),
         AuthUrl::new(state.config.google_oauth.auth_url.clone())
-            .map_err(|_| AppError::Internal)?,
+            .map_err(|e| AppError::Internal(format!("Invalid auth URL: {}", e)))?,
         Some(TokenUrl::new(state.config.google_oauth.token_url.clone())
-            .map_err(|_| AppError::Internal)?),
+            .map_err(|e| AppError::Internal(format!("Invalid token URL: {}", e)))?),
     )
     .set_redirect_uri(
         RedirectUrl::new(state.config.google_oauth.redirect_url.clone())
-            .map_err(|_| AppError::Internal)?,
+            .map_err(|e| AppError::Internal(format!("Invalid redirect URL: {}", e)))?,
     );
 
     let (auth_url, _csrf_token) = client
@@ -161,13 +167,13 @@ pub async fn google_oauth_callback(
         ClientId::new(state.config.google_oauth.client_id.clone()),
         Some(ClientSecret::new(state.config.google_oauth.client_secret.clone())),
         AuthUrl::new(state.config.google_oauth.auth_url.clone())
-            .map_err(|_| AppError::Internal)?,
+            .map_err(|e| AppError::Internal(format!("Invalid auth URL: {}", e)))?,
         Some(TokenUrl::new(state.config.google_oauth.token_url.clone())
-            .map_err(|_| AppError::Internal)?),
+            .map_err(|e| AppError::Internal(format!("Invalid token URL: {}", e)))?),
     )
     .set_redirect_uri(
         RedirectUrl::new(state.config.google_oauth.redirect_url.clone())
-            .map_err(|_| AppError::Internal)?,
+            .map_err(|e| AppError::Internal(format!("Invalid redirect URL: {}", e)))?,
     );
 
     let token = client
@@ -182,10 +188,10 @@ pub async fn google_oauth_callback(
         .bearer_auth(token.access_token().secret())
         .send()
         .await
-        .map_err(|_| AppError::Internal)?
+        .map_err(|e| AppError::Internal(format!("Failed to fetch Google user info: {}", e)))?
         .json()
         .await
-        .map_err(|_| AppError::Internal)?;
+        .map_err(|e| AppError::Internal(format!("Failed to parse Google user info: {}", e)))?;
 
     let user = match state
         .store

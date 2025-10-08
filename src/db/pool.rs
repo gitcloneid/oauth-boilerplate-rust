@@ -8,10 +8,12 @@ pub type DbPool = Pool<AsyncPgConnection>;
 pub async fn create_pool(database_url: &str, max_connections: u32) -> Result<DbPool, AppError> {
     let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
     
+    // Build pool without timeouts (they require tokio runtime context)
     let pool = Pool::builder(config)
         .max_size(max_connections as usize)
         .build()
         .map_err(|e| AppError::Pool(e.to_string()))?;
 
+    tracing::info!("Database connection pool created with {} max connections", max_connections);
     Ok(pool)
 }
