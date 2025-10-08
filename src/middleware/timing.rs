@@ -21,6 +21,6 @@ pub async fn timing_middleware(req: Request, next: Next) -> Response {
         duration_ms = %duration.as_millis(),
         "Request completed"
     );
-    
+
     response
 }

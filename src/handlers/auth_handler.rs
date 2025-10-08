@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{State, Query},
+    extract::{State, Query, ConnectInfo},
     response::{IntoResponse, Redirect},
 };
 use serde::{Deserialize, Serialize};
@@ -8,15 +8,18 @@ use oauth2::{
     AuthorizationCode, AuthUrl, ClientId, ClientSecret, CsrfToken, RedirectUrl,
     TokenUrl, TokenResponse, basic::BasicClient, reqwest::async_http_client,
 };
+use std::net::SocketAddr;
 use crate::error::AppError;
 use crate::config::AppConfig;
 use crate::db::DieselStore;
 use crate::utils::{hashing, jwt};
+use crate::middleware::rate_limit::RateLimiter;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
     pub store: DieselStore,
+    pub rate_limiter: RateLimiter,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,19 +98,42 @@ pub async fn register(
 }
 
 pub async fn login(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
+    let client_ip = addr.ip().to_string();
+    
+    // Check IP-based rate limit (prevent brute force from single IP)
+    if let Err(msg) = state.rate_limiter.check_ip_limit(&client_ip) {
+        tracing::warn!("Rate limit exceeded for IP: {} - {}", client_ip, msg);
+        return Err(AppError::TooManyRequests(msg));
+    }
+    
+    // Check email-based rate limit (prevent credential stuffing)
+    if let Err(msg) = state.rate_limiter.check_email_limit(&payload.email) {
+        tracing::warn!("Rate limit exceeded for email: {} - {}", payload.email, msg);
+        return Err(AppError::TooManyRequests(msg));
+    }
+
     let db_start = std::time::Instant::now();
     let user = state
         .store
         .find_user_by_email(&payload.email)
         .await?
-        .ok_or(AppError::Unauthorized)?;
+        .ok_or_else(|| {
+            tracing::warn!("Login attempt for non-existent email: {}", payload.email);
+            AppError::Unauthorized
+        })?;
     tracing::debug!("Login: DB find_user took {}ms", db_start.elapsed().as_millis());
 
     if let Some(password_hash) = &user.password_hash {
         if !hashing::verify_password(&payload.password, password_hash)? {
+            tracing::warn!(
+                "Failed login attempt for email: {} from IP: {}", 
+                payload.email, 
+                client_ip
+            );
             return Err(AppError::Unauthorized);
         }
     } else {
@@ -115,6 +141,10 @@ pub async fn login(
             "This account uses OAuth login".to_string()
         ));
     }
+
+    // Successful login - reset email rate limit
+    state.rate_limiter.reset_email_limit(&payload.email);
+    tracing::info!("Successful login for email: {} from IP: {}", payload.email, client_ip);
 
     let token = jwt::generate_token(
         user.id,
